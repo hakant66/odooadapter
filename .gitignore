@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.next/
+dist/
+coverage/
+*.log
+apps/core-svc/odoo.db
+apps/core-svc/.venv/

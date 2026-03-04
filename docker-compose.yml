@@ -1,0 +1,130 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: odoo-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-odoo_synco}
+      POSTGRES_USER: ${POSTGRES_USER:-odoo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-odoo}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-odoo} -d ${POSTGRES_DB:-odoo_synco}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: odoo-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    container_name: odoo-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: odoo-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  core-svc:
+    build:
+      context: ./apps/core-svc
+      dockerfile: Dockerfile
+    container_name: odoo-core-svc
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://odoo:odoo@postgres:5432/odoo_synco}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-replace-me-with-32-byte-key-material}
+      CORE_PUBLIC_BASE_URL: ${CORE_PUBLIC_BASE_URL:-http://localhost:8000}
+      SHOPIFY_CLIENT_ID: ${SHOPIFY_CLIENT_ID:-}
+      SHOPIFY_CLIENT_SECRET: ${SHOPIFY_CLIENT_SECRET:-}
+      SHOPIFY_SCOPES: ${SHOPIFY_SCOPES:-read_products,write_products,read_orders,write_fulfillments,read_all_orders}
+      AUTO_CREATE_TABLES: "false"
+    command: ["sh", "-c", "python -m app.bootstrap && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${CORE_SVC_PORT:-8000}:8000"
+
+  core-worker:
+    build:
+      context: ./apps/core-svc
+      dockerfile: Dockerfile
+    container_name: odoo-core-worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://odoo:odoo@postgres:5432/odoo_synco}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-replace-me-with-32-byte-key-material}
+      CORE_PUBLIC_BASE_URL: ${CORE_PUBLIC_BASE_URL:-http://localhost:8000}
+      AUTO_CREATE_TABLES: "false"
+    command: ["python", "-m", "app.workers.event_consumer"]
+    depends_on:
+      core-svc:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mcp:
+    build:
+      context: ./apps/mcp
+      dockerfile: Dockerfile
+    container_name: odoo-mcp
+    env_file:
+      - .env
+    environment:
+      MCP_PORT: 3001
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SHOPIFY_WEBHOOK_SECRET: ${SHOPIFY_WEBHOOK_SECRET:-replace-me}
+      INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-replace-me}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "${MCP_PORT:-3001}:3001"
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: odoo-web
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+      NEXT_PUBLIC_CORE_API_BASE: http://core-svc:8000
+      CORE_API_INTERNAL_BASE: http://core-svc:8000
+    depends_on:
+      - core-svc
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+volumes:
+  pgdata:
+  qdrant_data:
+  ollama_data:
