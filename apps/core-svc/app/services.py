@@ -12,6 +12,7 @@ from app.models import (
     ExternalEntityMap,
     CanonicalOrder,
     CredentialVault,
+    GmailOAuthAccount,
     OAuthState,
     OutboxEvent,
     SyncJob,
@@ -130,6 +131,85 @@ def list_jobs(db: Session, tenant_id: str | None = None, limit: int = 100) -> li
     if tenant_id:
         stmt = stmt.where(SyncJob.tenant_id == tenant_id)
     return list(db.scalars(stmt).all())
+
+
+def upsert_gmail_oauth_account(
+    db: Session,
+    *,
+    tenant_id: str,
+    account_id: str,
+    email: str,
+    credential_ref: str,
+) -> GmailOAuthAccount:
+    existing = db.scalar(
+        select(GmailOAuthAccount).where(
+            GmailOAuthAccount.tenant_id == tenant_id,
+            GmailOAuthAccount.account_id == account_id,
+        )
+    )
+    if existing:
+        existing.email = email
+        existing.credential_ref = credential_ref
+        existing.status = "active"
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    row = GmailOAuthAccount(
+        tenant_id=tenant_id,
+        account_id=account_id,
+        email=email,
+        credential_ref=credential_ref,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_gmail_oauth_accounts(db: Session, *, tenant_id: str) -> list[GmailOAuthAccount]:
+    return list(
+        db.scalars(
+            select(GmailOAuthAccount)
+            .where(
+                GmailOAuthAccount.tenant_id == tenant_id,
+                GmailOAuthAccount.status == "active",
+            )
+            .order_by(GmailOAuthAccount.created_at.desc())
+        ).all()
+    )
+
+
+def get_gmail_oauth_account(
+    db: Session,
+    *,
+    tenant_id: str,
+    account_id: str,
+) -> GmailOAuthAccount | None:
+    return db.scalar(
+        select(GmailOAuthAccount).where(
+            GmailOAuthAccount.tenant_id == tenant_id,
+            GmailOAuthAccount.account_id == account_id,
+            GmailOAuthAccount.status == "active",
+        )
+    )
+
+
+def deactivate_gmail_oauth_account(
+    db: Session,
+    *,
+    tenant_id: str,
+    account_id: str,
+) -> GmailOAuthAccount | None:
+    row = get_gmail_oauth_account(db, tenant_id=tenant_id, account_id=account_id)
+    if not row:
+        return None
+    row.status = "inactive"
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def list_emails(

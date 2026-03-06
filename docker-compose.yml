@@ -55,6 +55,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-replace-me-with-32-byte-key-material}
       CORE_PUBLIC_BASE_URL: ${CORE_PUBLIC_BASE_URL:-http://localhost:8000}
+      EMAIL_MCP_BASE_URL: ${EMAIL_MCP_BASE_URL:-http://sold-item-email-mcp:3010}
       SHOPIFY_CLIENT_ID: ${SHOPIFY_CLIENT_ID:-}
       SHOPIFY_CLIENT_SECRET: ${SHOPIFY_CLIENT_SECRET:-}
       SHOPIFY_SCOPES: ${SHOPIFY_SCOPES:-read_products,write_products,read_orders,write_fulfillments,read_all_orders}
@@ -65,6 +66,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      sold-item-email-mcp:
+        condition: service_started
     ports:
       - "${CORE_SVC_PORT:-8000}:8000"
 
@@ -89,6 +92,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      sold-item-email-mcp:
+        condition: service_started
 
   mcp:
     build:
@@ -108,6 +113,43 @@ services:
     ports:
       - "${MCP_PORT:-3001}:3001"
 
+  mcp-server:
+    build:
+      context: ./apps/mcp-server
+      dockerfile: Dockerfile
+    container_name: odoo-mcp-server
+    env_file:
+      - .env
+    environment:
+      CORE_API_INTERNAL_BASE: http://core-svc:8000
+      MCP_WEBHOOK_BASE: http://mcp:3001
+      INBOUND_EMAIL_WEBHOOK_SECRET: ${INBOUND_EMAIL_WEBHOOK_SECRET:-replace-me}
+    depends_on:
+      core-svc:
+        condition: service_started
+      mcp:
+        condition: service_started
+    stdin_open: true
+    tty: true
+    profiles:
+      - mcp
+
+  sold-item-email-mcp:
+    build:
+      context: ./apps/sold-item-email-mcp
+      dockerfile: Dockerfile
+    container_name: odoo-sold-item-email-mcp
+    env_file:
+      - .env
+    environment:
+      EMAIL_MCP_TRANSPORT: http
+      EMAIL_MCP_HTTP_PORT: 3010
+      EMAIL_MCP_MAX_EXTRACTED_TEXT_CHARS: ${EMAIL_MCP_MAX_EXTRACTED_TEXT_CHARS:-12000}
+      GMAIL_ACCOUNTS_JSON: ${GMAIL_ACCOUNTS_JSON:-{}}
+    command: ["npm", "start"]
+    ports:
+      - "${EMAIL_MCP_PORT:-3010}:3010"
+
   web:
     build:
       context: ./apps/web
@@ -119,6 +161,7 @@ services:
       PORT: 3000
       NEXT_PUBLIC_CORE_API_BASE: http://core-svc:8000
       CORE_API_INTERNAL_BASE: http://core-svc:8000
+      MCP_INTERNAL_BASE: http://mcp:3001
     depends_on:
       - core-svc
     ports:

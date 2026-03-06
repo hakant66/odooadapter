@@ -85,7 +85,11 @@ resolve_port() {
 resolve_port "CORE_SVC_PORT" "8000"
 resolve_port "MCP_PORT" "3001"
 resolve_port "WEB_PORT" "3000"
+resolve_port "EMAIL_MCP_PORT" "3010"
 resolve_port "OLLAMA_PORT" "11434"
+resolve_port "POSTGRES_PORT" "5432"
+resolve_port "REDIS_PORT" "6379"
+resolve_port "QDRANT_PORT" "6333"
 
 CORE_SVC_PORT="$(get_env "CORE_SVC_PORT" "8000")"
 set_env "CORE_PUBLIC_BASE_URL" "http://localhost:${CORE_SVC_PORT}"
@@ -94,12 +98,15 @@ docker compose up -d --build
 
 MCP_PORT="$(get_env "MCP_PORT" "3001")"
 WEB_PORT="$(get_env "WEB_PORT" "3000")"
+EMAIL_MCP_PORT="$(get_env "EMAIL_MCP_PORT" "3010")"
 OLLAMA_PORT="$(get_env "OLLAMA_PORT" "11434")"
+QDRANT_PORT="$(get_env "QDRANT_PORT" "6333")"
 
 echo ""
 echo "Stack is up:"
 echo "- Core API:   http://localhost:${CORE_SVC_PORT}/docs"
 echo "- MCP Health: http://localhost:${MCP_PORT}/health"
 echo "- Web UI:     http://localhost:${WEB_PORT}"
-echo "- Qdrant:     http://localhost:6333/dashboard"
+echo "- Email MCP:  http://localhost:${EMAIL_MCP_PORT}/health"
+echo "- Qdrant:     http://localhost:${QDRANT_PORT}/dashboard"
 echo "- Ollama API: http://localhost:${OLLAMA_PORT}"

@@ -6,6 +6,7 @@ This repository implements a production-oriented scaffold for a bi-directional i
 
 - `apps/core-svc`: FastAPI core integration brain
 - `apps/mcp`: Express-based webhook gateway and connector edge
+- `apps/mcp-server`: Model Context Protocol server exposing control-plane tools
 - `apps/web`: Next.js control plane UI
 - Postgres: system of record
 - Redis: queue + ephemeral state
@@ -19,6 +20,9 @@ This repository implements a production-oriented scaffold for a bi-directional i
 ```bash
 ./scripts/dev-up.sh
 ```
+
+The script checks busy host ports and automatically picks the next free one, including
+`WEB_PORT` (default `3000`) when port 3000 is already occupied.
 
 Or bootstrap DB schema only:
 
@@ -45,6 +49,12 @@ Or bootstrap DB schema only:
 - Background worker consuming Redis queue
 - Alembic migration-based DB lifecycle
 - Real connector adapters for Shopify and Odoo (JSON-RPC/XML-RPC)
+
+## DB Lifecycle Policy
+
+- Runtime schema changes are managed with Alembic migrations only.
+- Containers run migrations via `python -m app.bootstrap` (`alembic upgrade head`) before API startup.
+- Use `./scripts/db-bootstrap.sh` for one-shot migration runs.
 
 ## Connector Credentials
 
@@ -181,6 +191,126 @@ Optional headers:
 
 Webhook payload is normalized into an `emails/inbound` event and queued to `sync:events`.
 Core worker creates/upserts canonical email rows from these webhook events.
+
+## MCP Server (Tool Integration)
+
+This repository now includes a dedicated MCP server in `apps/mcp-server` for integration
+with MCP clients and agents.
+
+Run it as a container (interactive stdio transport):
+
+```bash
+docker compose run --rm -i --profile mcp mcp-server
+```
+
+Or via Make target:
+
+```bash
+make mcp-server
+```
+
+Implemented MCP tools:
+
+- `core_health`
+- `create_tenant`
+- `create_odoo_connection`
+- `import_emails`
+- `list_jobs`
+- `list_emails`
+- `send_inbound_email_webhook`
+
+Container defaults:
+
+- Core API base: `http://core-svc:8000`
+- Webhook gateway base: `http://mcp:3001`
+
+## Sold Item Email MCP (Gmail)
+
+This repository also includes `apps/sold-item-email-mcp`, a dedicated MCP server for
+Gmail acquisition and attachment extraction.
+
+It runs in Docker as an HTTP tool wrapper by default (`EMAIL_MCP_TRANSPORT=http`) so
+`core-svc` can call it without spawning a process for each request.
+
+Start stack:
+
+```bash
+./scripts/dev-up.sh
+```
+
+Run standalone stdio mode for external MCP clients:
+
+```bash
+make email-mcp-server
+```
+
+### Implemented phases
+
+- Phase 1: separate MCP server scaffold (`sold-item-email-mcp`)
+- Phase 2: Gmail OAuth2 account loading via `GMAIL_ACCOUNTS_JSON`
+- Phase 3: message fetch and normalization contract
+- Phase 4: attachment extraction for `.pdf`, `.docx`, `.csv`, `.xlsx`
+- Phase 5: subject normalization helper
+
+### Tools
+
+- `email.test_connection`
+- `email.fetch_messages`
+- `email.get_message`
+- `email.get_attachments`
+- `email.process_subject_query`
+
+### Core Integration Flow
+
+- UI triggers `POST /api/core/sync/gmail/import`
+- Web proxy calls Core `POST /sync/gmail/import`
+- Core calls Email MCP HTTP tools:
+  - `/tools/email.fetch_messages`
+  - `/tools/email.get_message`
+  - `/tools/email.get_attachments`
+- Core persists emails via canonical pipeline (`upsert_email_from_external`)
+
+### OAuth Token Persistence (DB + Alembic)
+
+Gmail OAuth credentials are persisted in Core DB:
+
+- Account metadata table: `gmail_oauth_accounts`
+- Secret material: encrypted in `credential_vault`
+- Migration: `0004_gmail_oauth_accounts`
+
+Core CRUD APIs:
+
+- `POST /gmail/accounts` (create/update account + encrypted tokens)
+- `GET /gmail/accounts?tenant_id=...`
+- `DELETE /gmail/accounts/{account_id}?tenant_id=...` (soft deactivate)
+
+`POST /sync/gmail/import` now reads OAuth credentials from DB and passes them to Email MCP.
+
+### Gmail account config
+
+Primary path: store credentials via Core CRUD API above.
+
+Optional fallback only (for standalone testing): set `GMAIL_ACCOUNTS_JSON` in `.env`:
+
+```json
+{
+  "default": {
+    "client_id": "YOUR_GOOGLE_CLIENT_ID",
+    "client_secret": "YOUR_GOOGLE_CLIENT_SECRET",
+    "refresh_token": "YOUR_REFRESH_TOKEN",
+    "user_email": "you@gmail.com"
+  }
+}
+```
+
+Multiple accounts are supported by key:
+
+```json
+{
+  "ops": { "client_id": "...", "client_secret": "...", "refresh_token": "..." },
+  "sales": { "client_id": "...", "client_secret": "...", "refresh_token": "..." }
+}
+```
 
 ## UI Operations
 

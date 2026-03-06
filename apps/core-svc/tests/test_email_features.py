@@ -171,3 +171,103 @@ def test_worker_upserts_email_from_webhook_payload():
         assert mapping.internal_id == email.id
     finally:
         db.close()
+
+
+def test_gmail_oauth_crud_and_sync_import(monkeypatch):
+    import app.main as main_module
+
+    client = TestClient(app)
+    tenant_id = _create_tenant(client, "gmail-oauth-tenant")
+
+    create_resp = client.post(
+        "/gmail/accounts",
+        json={
+            "tenant_id": tenant_id,
+            "account_id": "ops",
+            "email": "ops@gmail.com",
+            "client_id": "cid",
+            "client_secret": "csecret",
+            "refresh_token": "rtoken",
+            "access_token": "atoken",
+            "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+        },
+    )
+    assert create_resp.status_code == 200
+    assert create_resp.json()["account_id"] == "ops"
+
+    list_resp = client.get("/gmail/accounts", params={"tenant_id": tenant_id})
+    assert list_resp.status_code == 200
+    rows = list_resp.json()
+    assert len(rows) == 1
+    assert rows[0]["email"] == "ops@gmail.com"
+
+    calls = []
+
+    def fake_tool_call(tool_name, payload):
+        calls.append((tool_name, payload))
+        oauth = payload.get("oauth", {})
+        assert oauth.get("client_id") == "cid"
+        assert oauth.get("client_secret") == "csecret"
+        assert oauth.get("refresh_token") == "rtoken"
+        if tool_name == "email.fetch_messages":
+            return {"messages": [{"message_id": "m-1"}], "count": 1}
+        if tool_name == "email.get_message":
+            return {
+                "message_id": "m-1",
+                "thread_id": "t-1",
+                "date": "2026-03-04T10:00:00Z",
+                "from": "sender@example.com",
+                "to": ["ops@gmail.com"],
+                "cc": [],
+                "subject": "Gmail Import",
+                "snippet": "snippet",
+                "mailbox": "INBOX",
+                "body": "hello",
+            }
+        if tool_name == "email.get_attachments":
+            return {
+                "attachments": [
+                    {
+                        "id": "att-1",
+                        "filename": "sample.pdf",
+                        "mime_type": "application/pdf",
+                        "size": 100,
+                        "inline": False,
+                        "extracted_text": "pdf content",
+                        "extraction_status": "ok",
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected tool {tool_name}")
+
+    monkeypatch.setattr(main_module, "_email_mcp_tool_call", fake_tool_call)
+
+    sync_resp = client.post(
+        "/sync/gmail/import",
+        json={
+            "tenant_id": tenant_id,
+            "account_id": "ops",
+            "mailbox": "INBOX",
+            "window_days": 7,
+            "max_messages": 10,
+            "target_to_address": "ops@gmail.com",
+            "include_headers": False,
+            "include_snippet": True,
+            "include_attachments": True,
+            "extract_attachment_text": True,
+        },
+    )
+    assert sync_resp.status_code == 200
+    assert sync_resp.json()["imported_count"] == 1
+    assert sync_resp.json()["attachments_processed"] == 1
+
+    assert [c[0] for c in calls] == ["email.fetch_messages", "email.get_message", "email.get_attachments"]
+
+    db = SessionLocal()
+    try:
+        row = db.query(CanonicalEmail).filter(CanonicalEmail.tenant_id == tenant_id).one_or_none()
+        assert row is not None
+        assert row.source == "gmail_mcp"
+        assert row.subject == "Gmail Import"
+    finally:
+        db.close()

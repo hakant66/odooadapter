@@ -34,6 +34,19 @@ class ConnectionRead(BaseModel):
     connector: str
     external_account_id: str
     status: str
+    validated: bool = False
+    message: str = ""
+
+
+class ConnectionTestRequest(BaseModel):
+    tenant_id: str
+    connector: str
+
+
+class ConnectionTestResponse(BaseModel):
+    ok: bool
+    connector: str
+    message: str
 
 
 class EventEnvelope(BaseModel):
@@ -95,6 +108,47 @@ class EmailSyncTriggerRequest(BaseModel):
     target_address: str = ""
     source: str = "odoo_alias_fetchmail"
     limit: int = 200
+
+
+class GmailSyncTriggerRequest(BaseModel):
+    tenant_id: str
+    account_id: str = "default"
+    mailbox: str = "INBOX"
+    window_days: int = 7
+    max_messages: int = 20
+    target_to_address: str = ""
+    include_headers: bool = False
+    include_snippet: bool = True
+    include_attachments: bool = True
+    extract_attachment_text: bool = True
+
+
+class GmailSyncResponse(BaseModel):
+    imported_count: int
+    fetched_count: int
+    attachments_processed: int
+    account_id: str
+
+
+class GmailOAuthAccountCreate(BaseModel):
+    tenant_id: str
+    account_id: str
+    email: str = ""
+    client_id: str
+    client_secret: str
+    refresh_token: str
+    access_token: str = ""
+    redirect_uri: str = "urn:ietf:wg:oauth:2.0:oob"
+
+
+class GmailOAuthAccountRead(BaseModel):
+    id: str
+    tenant_id: str
+    account_id: str
+    email: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class ManualJobCreate(BaseModel):

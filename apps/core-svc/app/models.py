@@ -61,6 +61,21 @@ class CredentialVault(Base, TimestampMixin):
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class GmailOAuthAccount(Base, TimestampMixin):
+    __tablename__ = "gmail_oauth_accounts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "account_id", name="uq_tenant_gmail_account"),
+        Index("idx_gmail_oauth_tenant", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    credential_ref: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+
+
 class OAuthState(Base, TimestampMixin):
     __tablename__ = "oauth_states"
     __table_args__ = (
