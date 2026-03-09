@@ -5,19 +5,9 @@ const coreBase =
   process.env.NEXT_PUBLIC_CORE_API_BASE ||
   "http://localhost:8000";
 
-export async function GET(request) {
-  const { searchParams } = new URL(request.url);
-  const limit = searchParams.get("limit");
-  const query = limit ? `?limit=${encodeURIComponent(limit)}` : "";
-
-  const response = await fetch(`${coreBase}/tenants${query}`, { cache: "no-store" });
-  const data = await response.json().catch(() => []);
-  return NextResponse.json(Array.isArray(data) ? data : [], { status: response.status });
-}
-
 export async function POST(request) {
   const payload = await request.json();
-  const response = await fetch(`${coreBase}/tenants`, {
+  const response = await fetch(`${coreBase}/sync/odoo/bills/preview-from-emails`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",

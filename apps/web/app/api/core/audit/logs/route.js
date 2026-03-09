@@ -7,23 +7,22 @@ const coreBase =
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
-  const limit = searchParams.get("limit");
-  const query = limit ? `?limit=${encodeURIComponent(limit)}` : "";
-
-  const response = await fetch(`${coreBase}/tenants${query}`, { cache: "no-store" });
-  const data = await response.json().catch(() => []);
-  return NextResponse.json(Array.isArray(data) ? data : [], { status: response.status });
+  const response = await fetch(`${coreBase}/audit/logs?${searchParams.toString()}`, {
+    method: "GET",
+    cache: "no-store"
+  });
+  const data = await response.json().catch(() => ([]));
+  return NextResponse.json(data, { status: response.status });
 }
 
 export async function POST(request) {
   const payload = await request.json();
-  const response = await fetch(`${coreBase}/tenants`, {
+  const response = await fetch(`${coreBase}/audit/logs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
     body: JSON.stringify(payload)
   });
-
   const data = await response.json().catch(() => ({}));
   return NextResponse.json(data, { status: response.status });
 }

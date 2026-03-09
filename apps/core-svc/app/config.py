@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     auto_create_tables: bool = False
     core_public_base_url: str = "http://localhost:8000"
     email_mcp_base_url: str = "http://sold-item-email-mcp:3010"
+    openai_api_key: str = ""
+    openai_bill_extractor_model: str = "gpt-4.1-mini"
     shopify_client_id: str = ""
     shopify_client_secret: str = ""
     shopify_scopes: str = "read_products,write_products,read_orders,write_fulfillments,read_all_orders"

@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AuditLog,
     CanonicalEmail,
     Connection,
     ExternalEntityMap,
@@ -126,11 +127,82 @@ def get_tenant_by_id(db: Session, tenant_id: str) -> Tenant | None:
     return db.scalar(select(Tenant).where(Tenant.id == tenant_id))
 
 
+def list_tenants(db: Session, limit: int = 100) -> list[Tenant]:
+    return list(
+        db.scalars(
+            select(Tenant)
+            .order_by(Tenant.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def list_connections(
+    db: Session,
+    *,
+    tenant_id: str,
+    connector: str | None = None,
+    limit: int = 20,
+) -> list[Connection]:
+    stmt = (
+        select(Connection)
+        .where(
+            Connection.tenant_id == tenant_id,
+            Connection.status == "active",
+        )
+        .order_by(Connection.updated_at.desc())
+        .limit(limit)
+    )
+    if connector:
+        stmt = stmt.where(Connection.connector == connector)
+    return list(db.scalars(stmt).all())
+
+
 def list_jobs(db: Session, tenant_id: str | None = None, limit: int = 100) -> list[SyncJob]:
     stmt = select(SyncJob).order_by(SyncJob.created_at.desc()).limit(limit)
     if tenant_id:
         stmt = stmt.where(SyncJob.tenant_id == tenant_id)
     return list(db.scalars(stmt).all())
+
+
+def create_audit_log(
+    db: Session,
+    *,
+    tenant_id: str,
+    action: str,
+    actor: str,
+    entity_type: str = "",
+    entity_id: str = "",
+    details: dict | None = None,
+) -> AuditLog:
+    # Keep values within DB column limits to avoid 500s on large batch operations.
+    action_value = (action or "")[:80]
+    actor_value = (actor or "ui-user")[:120]
+    entity_type_value = (entity_type or "")[:80]
+    entity_id_value = (entity_id or "")[:120]
+    row = AuditLog(
+        tenant_id=tenant_id,
+        action=action_value,
+        actor=actor_value,
+        entity_type=entity_type_value,
+        entity_id=entity_id_value,
+        details_json=details or {},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_audit_logs(db: Session, *, tenant_id: str, limit: int = 100) -> list[AuditLog]:
+    return list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.tenant_id == tenant_id)
+            .order_by(AuditLog.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
 
 
 def upsert_gmail_oauth_account(
@@ -217,17 +289,131 @@ def list_emails(
     *,
     tenant_id: str,
     to_address: str = "",
+    from_address: str = "",
+    subject_contains: str = "",
+    has_attachments: bool | None = None,
+    filter_logic: str = "and",
     limit: int = 100,
 ) -> list[CanonicalEmail]:
+    normalized_logic = filter_logic.strip().lower()
+    is_or = normalized_logic == "or"
+
     stmt = (
         select(CanonicalEmail)
         .where(CanonicalEmail.tenant_id == tenant_id)
         .order_by(CanonicalEmail.received_at.desc(), CanonicalEmail.created_at.desc())
-        .limit(limit)
     )
-    if to_address:
-        stmt = stmt.where(CanonicalEmail.to_address.ilike(f"%{to_address}%"))
-    return list(db.scalars(stmt).all())
+
+    # We evaluate mixed SQL/JSON conditions in Python to support AND/OR consistently.
+    preload_limit = min(max(limit * 20, 500), 5000)
+    candidates = list(db.scalars(stmt.limit(preload_limit)).all())
+
+    def _contains(value: str, needle: str) -> bool:
+        return needle.lower() in value.lower()
+
+    filtered: list[CanonicalEmail] = []
+    for row in candidates:
+        checks: list[bool] = []
+        if to_address:
+            checks.append(_contains(row.to_address or "", to_address))
+        if from_address:
+            checks.append(_contains(row.from_address or "", from_address))
+        if subject_contains:
+            checks.append(_contains(row.subject or "", subject_contains))
+        if has_attachments is not None:
+            attachments = row.payload_json.get("attachments", []) if isinstance(row.payload_json, dict) else []
+            attachment_count = len(attachments) if isinstance(attachments, list) else 0
+            checks.append(attachment_count > 0 if has_attachments else attachment_count == 0)
+
+        if not checks:
+            matched = True
+        else:
+            matched = any(checks) if is_or else all(checks)
+
+        if matched:
+            filtered.append(row)
+        if len(filtered) >= limit:
+            break
+    return filtered
+
+
+def get_emails_by_ids(
+    db: Session,
+    *,
+    tenant_id: str,
+    email_ids: list[str],
+) -> list[CanonicalEmail]:
+    if not email_ids:
+        return []
+    rows = list(
+        db.scalars(
+            select(CanonicalEmail).where(
+                CanonicalEmail.tenant_id == tenant_id,
+                CanonicalEmail.id.in_(email_ids),
+            )
+        ).all()
+    )
+    index = {row.id: row for row in rows}
+    return [index[email_id] for email_id in email_ids if email_id in index]
+
+
+def set_email_status(
+    db: Session,
+    *,
+    tenant_id: str,
+    email_id: str,
+    status: str,
+) -> CanonicalEmail | None:
+    row = db.scalar(
+        select(CanonicalEmail).where(
+            CanonicalEmail.tenant_id == tenant_id,
+            CanonicalEmail.id == email_id,
+        )
+    )
+    if not row:
+        return None
+    row.status = str(status or "").strip() or row.status
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def mark_email_imported(
+    db: Session,
+    *,
+    tenant_id: str,
+    email_id: str,
+    bill_reference: str = "",
+    bill_id: int | None = None,
+    imported_at: datetime | None = None,
+) -> CanonicalEmail | None:
+    row = db.scalar(
+        select(CanonicalEmail).where(
+            CanonicalEmail.tenant_id == tenant_id,
+            CanonicalEmail.id == email_id,
+        )
+    )
+    if not row:
+        return None
+    payload = row.payload_json if isinstance(row.payload_json, dict) else {}
+    import_info = payload.get("import_info", {}) if isinstance(payload.get("import_info"), dict) else {}
+    timestamp = (imported_at or datetime.utcnow()).isoformat()
+    import_info.update(
+        {
+            "status": "imported",
+            "imported_at": timestamp,
+            "bill_reference": str(bill_reference or import_info.get("bill_reference", "") or ""),
+            "bill_id": int(bill_id) if bill_id else import_info.get("bill_id"),
+        }
+    )
+    payload["import_info"] = import_info
+    row.payload_json = payload
+    row.status = "imported"
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def create_oauth_state(
@@ -537,15 +723,28 @@ def upsert_email_from_external(
     if mapping:
         email = db.scalar(select(CanonicalEmail).where(CanonicalEmail.id == mapping.internal_id))
         if email:
+            existing_payload = email.payload_json if isinstance(email.payload_json, dict) else {}
+            existing_import_info = (
+                existing_payload.get("import_info", {})
+                if isinstance(existing_payload.get("import_info", {}), dict)
+                else {}
+            )
+            merged_payload = dict(email_payload or {})
+            if existing_import_info and "import_info" not in merged_payload:
+                merged_payload["import_info"] = existing_import_info
+
             email.subject = subject
             email.from_address = from_address
             email.to_address = to_address
             email.source = source
-            email.status = str(email_payload.get("status") or "received")
+            if str(existing_import_info.get("status", "")).lower() == "imported":
+                email.status = "imported"
+            else:
+                email.status = str(email_payload.get("status") or "received")
             email.received_at = _coerce_datetime(
                 str(email_payload.get("date") or email_payload.get("received_at") or "")
             )
-            email.payload_json = email_payload
+            email.payload_json = merged_payload
             db.add(email)
             db.commit()
             db.refresh(email)

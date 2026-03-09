@@ -354,7 +354,8 @@ const toolSchemas = {
       })
       .optional(),
     message_id: z.string().min(1),
-    extract_text: z.boolean().default(true)
+    extract_text: z.boolean().default(true),
+    include_content_base64: z.boolean().default(false)
   },
   "email.process_subject_query": {
     subject: z.string().default(""),
@@ -457,7 +458,7 @@ const toolHandlers = {
     };
   },
 
-  "email.get_attachments": async ({ account_id, oauth, message_id, extract_text }) => {
+  "email.get_attachments": async ({ account_id, oauth, message_id, extract_text, include_content_base64 }) => {
     const { gmail } = getGmailClient(account_id, oauth || null);
     const response = await gmail.users.messages.get({
       userId: "me",
@@ -477,6 +478,7 @@ const toolHandlers = {
         mime_type: candidate.mimeType,
         size: bytes.length || candidate.size || 0,
         inline: candidate.inline,
+        content_base64: include_content_base64 ? bytes.toString("base64") : "",
         extracted_text: "",
         extraction_status: "skipped"
       };

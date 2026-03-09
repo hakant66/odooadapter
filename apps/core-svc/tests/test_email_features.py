@@ -44,6 +44,43 @@ def _create_tenant(client: TestClient, slug: str) -> str:
     return response.json()["id"]
 
 
+def test_list_tenants_and_connections_include_latest_state():
+    client = TestClient(app)
+    tenant_id = _create_tenant(client, "persisted-ui-state-tenant")
+
+    connection_resp = client.post(
+        "/connections",
+        json={
+            "tenant_id": tenant_id,
+            "connector": "mock",
+            "external_account_id": "mock-account",
+            "credential_payload": {"api_key": "secret"},
+            "metadata": {"base_url": "https://example.test", "database": "prod_db", "username": "ops@example.com"},
+        },
+    )
+    assert connection_resp.status_code == 200
+    created = connection_resp.json()
+    assert created["status"] == "active"
+    assert created["metadata"]["username"] == "ops@example.com"
+
+    tenants_resp = client.get("/tenants", params={"limit": 1})
+    assert tenants_resp.status_code == 200
+    tenants = tenants_resp.json()
+    assert len(tenants) == 1
+    assert tenants[0]["id"] == tenant_id
+
+    connections_resp = client.get(
+        "/connections",
+        params={"tenant_id": tenant_id, "connector": "mock", "limit": 1},
+    )
+    assert connections_resp.status_code == 200
+    rows = connections_resp.json()
+    assert len(rows) == 1
+    assert rows[0]["connector"] == "mock"
+    assert rows[0]["external_account_id"] == "mock-account"
+    assert rows[0]["metadata"]["database"] == "prod_db"
+
+
 def test_sync_emails_import_creates_import_emails_job():
     client = TestClient(app)
     tenant_id = _create_tenant(client, "email-job-tenant")
@@ -115,6 +152,145 @@ def test_get_emails_returns_persisted_email_records():
     assert body[0]["to_address"] == "support@example.com"
     assert body[0]["source"] == "odoo_alias_fetchmail"
     assert body[0]["status"] == "received"
+
+
+def test_get_emails_supports_from_subject_and_attachment_filters():
+    client = TestClient(app)
+    tenant_id = _create_tenant(client, "email-filter-tenant")
+
+    db = SessionLocal()
+    try:
+        upsert_email_from_external(
+            db,
+            tenant_id=tenant_id,
+            connector="gmail",
+            email_payload={
+                "id": "gmail-msg-1",
+                "subject": "Invoice for March",
+                "email_from": "billing@example.com",
+                "to": ["taskin.baba@gmail.com"],
+                "date": "2026-03-06T12:00:00Z",
+                "attachments": [{"filename": "invoice.pdf"}],
+            },
+            source="gmail_mcp",
+        )
+        upsert_email_from_external(
+            db,
+            tenant_id=tenant_id,
+            connector="gmail",
+            email_payload={
+                "id": "gmail-msg-2",
+                "subject": "Meeting notes",
+                "email_from": "hr@example.com",
+                "to": ["taskin.baba@gmail.com"],
+                "date": "2026-03-06T12:30:00Z",
+                "attachments": [],
+            },
+            source="gmail_mcp",
+        )
+    finally:
+        db.close()
+
+    from_resp = client.get(
+        "/emails",
+        params={"tenant_id": tenant_id, "from_address": "billing@", "limit": 10},
+    )
+    assert from_resp.status_code == 200
+    from_rows = from_resp.json()
+    assert len(from_rows) == 1
+    assert from_rows[0]["from_address"] == "billing@example.com"
+
+    subject_resp = client.get(
+        "/emails",
+        params={"tenant_id": tenant_id, "subject_contains": "Invoice", "limit": 10},
+    )
+    assert subject_resp.status_code == 200
+    subject_rows = subject_resp.json()
+    assert len(subject_rows) == 1
+    assert subject_rows[0]["subject"] == "Invoice for March"
+
+    with_attachments_resp = client.get(
+        "/emails",
+        params={"tenant_id": tenant_id, "has_attachments": "true", "limit": 10},
+    )
+    assert with_attachments_resp.status_code == 200
+    with_attachments_rows = with_attachments_resp.json()
+    assert len(with_attachments_rows) == 1
+    assert with_attachments_rows[0]["subject"] == "Invoice for March"
+
+    no_attachments_resp = client.get(
+        "/emails",
+        params={"tenant_id": tenant_id, "has_attachments": "false", "limit": 10},
+    )
+    assert no_attachments_resp.status_code == 200
+    no_attachments_rows = no_attachments_resp.json()
+    assert len(no_attachments_rows) == 1
+    assert no_attachments_rows[0]["subject"] == "Meeting notes"
+
+
+def test_get_emails_supports_or_filter_logic():
+    client = TestClient(app)
+    tenant_id = _create_tenant(client, "email-filter-or-tenant")
+
+    db = SessionLocal()
+    try:
+        upsert_email_from_external(
+            db,
+            tenant_id=tenant_id,
+            connector="gmail",
+            email_payload={
+                "id": "gmail-or-1",
+                "subject": "Invoice #1",
+                "email_from": "billing@example.com",
+                "to": ["taskin.baba@gmail.com"],
+                "date": "2026-03-06T12:00:00Z",
+                "attachments": [],
+            },
+            source="gmail_mcp",
+        )
+        upsert_email_from_external(
+            db,
+            tenant_id=tenant_id,
+            connector="gmail",
+            email_payload={
+                "id": "gmail-or-2",
+                "subject": "Weekly update",
+                "email_from": "ops@example.com",
+                "to": ["taskin.baba@gmail.com"],
+                "date": "2026-03-06T12:30:00Z",
+                "attachments": [{"filename": "report.pdf"}],
+            },
+            source="gmail_mcp",
+        )
+    finally:
+        db.close()
+
+    and_resp = client.get(
+        "/emails",
+        params={
+            "tenant_id": tenant_id,
+            "from_address": "billing@",
+            "has_attachments": "true",
+            "filter_logic": "and",
+            "limit": 10,
+        },
+    )
+    assert and_resp.status_code == 200
+    assert len(and_resp.json()) == 0
+
+    or_resp = client.get(
+        "/emails",
+        params={
+            "tenant_id": tenant_id,
+            "from_address": "billing@",
+            "has_attachments": "true",
+            "filter_logic": "or",
+            "limit": 10,
+        },
+    )
+    assert or_resp.status_code == 200
+    rows = or_resp.json()
+    assert len(rows) == 2
 
 
 def test_worker_upserts_email_from_webhook_payload():

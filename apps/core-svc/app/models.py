@@ -227,3 +227,17 @@ class WebhookEvent(Base, TimestampMixin):
     delivery_id: Mapped[str] = mapped_column(String(255), nullable=False)
     event_type: Mapped[str] = mapped_column(String(120), nullable=False)
     payload_json: Mapped[dict] = mapped_column("payload", JSON, default=dict, nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (Index("idx_audit_logs_tenant_created", "tenant_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor: Mapped[str] = mapped_column(String(120), default="ui-user", nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    details_json: Mapped[dict] = mapped_column("details", JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
